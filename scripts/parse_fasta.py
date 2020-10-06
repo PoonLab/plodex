@@ -5,9 +5,9 @@ import argparse
 import re
 import sys
 import json
-
-
-clock_rate = 8e-4  # substitutions per site per day per year
+from datetime import date, timedelta
+from scipy.stats import poisson
+from epiweeks import Week
 
 
 def convert_fasta(handle):
@@ -244,6 +244,39 @@ def parse_header(qname, regions, typos):
     return region, country, coldate
 
 
+def parse_date(isodate):
+    year, month, day = map(int, isodate.split('-'))
+    return date(year, month, day)
+
+
+def filter_outliers(iter, origin='2019-12-01', rate=8e-4, cutoff=0.005):
+    """
+    Exclude genomes that contain an excessive number of genetic differences
+    from the reference, assuming that the mean number of differences increases
+    linearly over time and that the variation around this mean follows a
+    Poisson distribution.
+    :param iter:  generator, returned by encode_diffs()
+    :param origin:  str, date of root sequence in ISO format (yyyy-mm-dd)
+    :param rate:  float, molecular clock rate (subs/site/yr)
+    :param cutoff:  float, use 1-cutoff to compute quantile of Poisson
+                    distribution
+    :yield:  tuples from generator that pass filter
+    """
+    mu = rate*29900/365.  # convert to subs/genome/day
+    t0 = parse_date(origin)
+    for qname, diffs, missing in iter:
+        coldate = qname.split('|')[-1]
+        if coldate.count('-') != 2:
+            continue
+        dt = (parse_date(coldate) - t0).days
+        max_diffs = poisson.ppf(q=1-cutoff, mu=mu*dt)
+        ndiffs = len(diffs)
+        if ndiffs > max_diffs:
+            # reject genome with too many differences given date
+            continue
+        yield qname, diffs, missing
+
+
 def collate_diffs(encoder, regions, typos, mask):
     """
     Stream output from encode_diffs to collate the incidence of each
@@ -253,21 +286,26 @@ def collate_diffs(encoder, regions, typos, mask):
     :param regions:  dict, counts keyed by region, country and collection date
     """
     res = {}
-    for qname, diffs, missing in encoder:
+    for qname, diffs, missing in filter_outliers(encoder):
         region, country, coldate = parse_header(qname, regions, typos)
         if coldate is None:
             continue
+
+        coldate = parse_date(coldate)
+        epiweek = Week.fromdate(coldate).week
+        year = coldate.year
+        yeek = '{}|{:02d}'.format(year, epiweek)
 
         # update nested dictionaries
         if region not in res:
             res.update({region: {}})
         if country not in res[region]:
             res[region].update({country: {}})
-        if coldate not in res[region][country]:
-            res[region][country].update({coldate: {}})
+        if yeek not in res[region][country]:
+            res[region][country].update({yeek: {}})
 
         # iterate through genetic differences in this genome
-        branch = res[region][country][coldate]  # shorthand
+        branch = res[region][country][yeek]  # shorthand
         for diff in diffs:
             typ, pos, alt = diff
             if typ == '~' and int(pos) in mask and alt in mask[pos]['alt']:
@@ -276,10 +314,10 @@ def collate_diffs(encoder, regions, typos, mask):
             if typ != '-' and 'N' in alt:
                 # ignore substitutions and insertions with uncalled bases
                 continue
-
-            if diff not in branch:
-                branch.update({diff: 0})
-            branch[diff] += 1
+            key = '|'.join(map(str, diff))
+            if key not in branch:
+                branch.update({key: 0})
+            branch[key] += 1
 
     return res
 
@@ -291,7 +329,7 @@ def parse_args():
     parser.add_argument('-o', '--outfile',
                         type=argparse.FileType('w'),
                         required=False,
-                        help="<output, optional> path to write output, "
+                        help="<output, optional> path to write JSON output, "
                              "defaults to stdout")
     parser.add_argument('-t', '--thread', type=int, default=3, 
                         help="<option> number of threads")
@@ -343,13 +381,6 @@ if __name__ == '__main__':
     # load problematic sites from VCF
     mask = load_filter(args.vcf)
 
-    args.outfile.write('region,country,coldate,dtype,pos,diff,count\n')
     encoder = encode_diffs(mm2, reflen=reflen)
     res = collate_diffs(encoder, regions, typos, mask)
-    for region, by_country in res.items():
-        for country, by_date in by_country.items():
-            for coldate, diffs in by_date.items():
-                for diff, count in diffs.items():
-                    args.outfile.write('{0},{1},{2},{3[0]},{3[1]},{3[2]},{4}\n'.format(
-                        region, country, coldate, diff, count
-                    ))
+    json.dump(res, args.outfile, sort_keys=True, indent=2, separators=(',', ': '))
