@@ -1,0 +1,60 @@
+---
+title: "Mutations of SARS-CoV-2"
+author: '@ArtPoon'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=FALSE}
+unwind <- function(nlst) {
+  n <- length(unlist(nlst))
+  regions <- rep(NA, n)
+  countries <- rep(NA, n)
+  coldates <- rep(NA, n)
+  diffs <- rep(NA, n)
+  counts <- rep(NA, n)
+  
+  i <- 1
+  for (region in names(nlst)) {
+    for (country in names(nlst[[region]])) {
+      for (coldate in names(nlst[[region]][[country]])) {
+        for (diff in names(nlst[[region]][[country]][[coldate]])) {
+          regions[i] <- region
+          countries[i] <- country
+          coldates[i] <- coldate
+          diffs[i] <- diff
+          counts[i] <- nlst[[region]][[country]][[coldate]][[diff]]
+          i <- i+1
+        }
+      }
+    }
+  }
+  
+  # parse year|week encoding
+  year.week <- sapply(coldates, function(x) strsplit(x, "\\|")[[1]])
+  
+  # parse diff encoding
+  mutations <- sapply(diffs, function(x) strsplit(x, "\\|")[[1]])
+  
+  data.frame(
+    region=as.factor(regions), 
+    country=as.factor(countries), 
+    year=as.integer(year.week[1,]),
+    week=as.integer(year.week[2,]),
+    mut.type=as.factor(mutations[1,]),
+    mut.pos=as.integer(mutations[2,]),
+    mut.diff=as.character(mutations[3,]),
+    count=as.integer(counts)
+    )
+}
+```
+
+test
+```{r}
+require(jsonlite)
+df <- unwind(fromJSON("data/gisaid.json"))
+summary(df)
+```

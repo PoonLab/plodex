@@ -5,7 +5,7 @@ import argparse
 import re
 import sys
 import json
-from datetime import date, timedelta
+from datetime import date
 from scipy.stats import poisson
 from epiweeks import Week
 
